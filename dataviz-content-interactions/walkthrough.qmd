@@ -1,0 +1,391 @@
+---
+title: "Making of Content Interactions Trend Chart"
+author: "Mikhail Popov"
+format:
+  revealjs:
+    theme: simple
+    logo: 'https://upload.wikimedia.org/wikipedia/commons/0/09/Wikimedia_Foundation_logo_-_horizontal.svg'
+---
+```{r setup, include=FALSE}
+library(kableExtra) # install.packages('kableExtra')
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+set.seed(42)
+```
+## Final Product
+
+![](figures/chart.png)
+
+## Data {.smaller}
+
+::: {.panel-tabset}
+
+### Loading
+
+<!--
+remotes::install_github("tidyverse/tidyverse")
+https://github.com/tidyverse/tidyverse/issues/157
+-->
+
+```{r metrics}
+library(here)
+library(tidyverse)
+
+metrics <- here("data/metrics.csv") |>
+  read_csv(show_col_types = FALSE) |>
+  janitor::clean_names() |>
+  arrange(month) |>
+  filter(month >= "2018-05-01")
+
+current_month <- max(metrics$month)
+```
+
+### `metrics` sample
+
+```{r, echo=FALSE, results='asis'}
+metrics |>
+  sample_n(10) |>
+  arrange(month) |>
+  kable(format = "html") |>
+  kable_styling(
+    full_width = TRUE,
+    bootstrap_options = c("striped", "condensed")
+  )
+```
+
+### Extending
+
+```{r metrics-ext}
+metrics_ext <- metrics |>
+  mutate(
+    dataloss = (pageview_multiplier > 1.0) |
+      month %in% (
+        metrics |>
+          filter(pageview_multiplier > 1.0) |>
+          pull(month) |>
+          range() |>
+          (\(x) x + months(c(-1, 1)))()
+      ),
+    period = case_when(
+      month < "2021-06-01" ~ "before dataloss",
+      month >= "2021-06-01" & month < "2022-02-01" ~ "during dataloss",
+      month >= "2022-02-01" ~ "after dataloss"
+    )
+  )
+```
+
+`dataloss` is `TRUE` for months *during* the data loss **and** 1 month *before/after* the data loss
+
+### `metrics_ext` sample
+
+```{r, echo=FALSE, results='asis'}
+metrics_ext |>
+  transmute(
+    month, `other columns` = "...",
+    dataloss = dataloss, period = period
+  ) |>
+  group_by(period) |>
+  sample_n(3) |>
+  ungroup() |>
+  arrange(month) |>
+  kable(format = "html") |>
+  kable_styling(
+    full_width = TRUE,
+    bootstrap_options = c("striped", "condensed")
+  )
+```
+
+:::
+
+## Annotations {.smaller}
+
+::: {.panel-tabset}
+
+### Code
+
+```{r annotations}
+annotations <- metrics |>
+  select(month) |>
+  mutate(
+    curr_offset = (month %in% (current_month - years(0:4))),
+    prev_offset = (month %in% ((current_month - months(1)) - years(0:4)))
+  ) |>
+  filter(curr_offset | prev_offset) |>
+  mutate(year = year(month)) |>
+  inner_join(metrics, by = "month") |>
+  group_by(year) |>
+  summarize(
+    from = interactions_corrected[prev_offset],
+    to = interactions_corrected[curr_offset],
+    # The change from 2021-06 to 2021-07 (for example):
+    delta = to - from,
+    direction = factor(delta > 0, c(TRUE, FALSE), c("up", "down"))
+  ) |>
+  mutate(
+    month = ymd(sprintf("%i-%02.0f-01", year, month(current_month))),
+    prev_month = month - months(1)
+  )
+```
+
+### `annotations`
+
+```{r, echo=FALSE, results='asis'}
+annotations |>
+  head() |>
+  kable(format = "html") |>
+  kable_styling(
+    full_width = TRUE,
+    bootstrap_options = c("striped", "condensed")
+  )
+```
+
+:::
+
+## Chart
+
+```{r wmf-colors, echo=FALSE}
+wmf_colors <- list(
+  "Base100" = "#ffffff",
+  "Base90" = "#f8f9fa",
+  "Base80" = "#eaecf0",
+  "Base70" = "#c8ccd1",
+  "Base50" = "#a2a9b1",
+  "Base30" = "#72777d",
+  "Base20" = "#54595d",
+  "Base10" = "#222222",
+  "Base0" = "#000000",
+  "Accent50" = "#3366cc",
+  "Accent30" = "#2a4b8d",
+  "Accent90" = "#eaf3ff",
+  "Red90" = "#fee7e6",
+  "Red50" = "#dd3333",
+  "Red30" = "#b32424",
+  "Green90" = "#d5fdf4",
+  "Green50" = "#00af89",
+  "Green30" = "#14866d",
+  "Yellow90" = "#fef6e7",
+  "Yellow50" = "#ffcc33",
+  "Yellow30" = "#ac6600"
+)
+
+```
+
+```{r p}
+library(scales)
+library(hrbrthemes)
+
+p <- ggplot() +
+  theme_ipsum_rc(
+    grid = "Yy",
+    base_family = "Montserrat"
+  )
+```
+
+## Highlighting July over the years
+
+```{r}
+#| output-location: column
+p <- p +
+  geom_point(
+    aes(x = month, y = to),
+    data = annotations,
+    shape = 21, stroke = 1,
+    size = 20, alpha = 0.5,
+    color = wmf_colors$Yellow50,
+    fill = wmf_colors$Yellow90
+  ) +
+  geom_point(
+    aes(x = month, y = to),
+    size = 2, # default 1.5
+    color = wmf_colors$Accent30,
+    data = annotations
+  )
+
+p
+```
+
+::: aside
+`wmf_colors` is a list of colors based on [Wikimedia Design Visual Style Guide](https://design.wikimedia.org/style-guide/visual-style_colors.html)
+:::
+
+## Line attempt No. 1
+
+```{r}
+#| output-location: column
+p +
+  geom_line(
+    aes(
+      x = month,
+      y = interactions
+    ),
+    color = wmf_colors$Accent30,
+    data = metrics_ext |>
+      filter(period != "during dataloss")
+  )
+```
+
+## Line attempt No. 2
+
+```{r}
+#| output-location: column
+#| code-line-numbers: '6'
+p <- p +
+  geom_line(
+    aes(
+      x = month,
+      y = interactions,
+      group = period
+    ),
+    color = wmf_colors$Accent30,
+    data = metrics_ext |>
+      filter(period != "during dataloss")
+  )
+
+p
+```
+
+## Dataloss: Undercount
+
+```{r}
+#| output-location: column
+p <- p +
+  geom_line(
+    aes(
+      x = month,
+      y = interactions
+    ),
+    data = metrics_ext |>
+      filter(dataloss),
+    color = wmf_colors$Accent50,
+    linetype = "33"
+  )
+
+p
+```
+
+::: aside
+In `linetype = "33"` the first digit refers to length of line segment, the second refers to length of space after it.
+:::
+
+## Dataloss: Estimate
+
+```{r}
+#| output-location: column
+#| code-line-numbers: '5,10'
+p <- p +
+  geom_line(
+    aes(
+      x = month,
+      y = interactions_corrected
+    ),
+    data = metrics_ext |>
+      filter(dataloss),
+    color = wmf_colors$Accent30,
+    linetype = "92",
+  )
+
+p
+```
+
+::: aside
+With `linetype = "92"` we get longer line segments (`9`) and shorter spaces between them (`2`).
+:::
+
+## Y Axis
+
+```{r}
+#| output-location: column
+p <- p +
+  scale_y_continuous(
+    name = NULL,
+    labels = label_number(
+      scale = 1e-9,
+      suffix = " B",
+      accuracy = 1
+    ),
+    breaks = seq(16e9, 23e9, 1e9),
+    limits = c(16e9, 23e9)
+  )
+
+p
+```
+
+## X Axis
+
+```{r}
+#| output-location: column
+p <- p +
+  scale_x_date(
+    name = NULL,
+    breaks = annotations$month,
+    date_labels = "%B\n%Y"
+  )
+
+p
+```
+
+::: aside
+`%B` is full month name (`%b` is abbreviated)
+:::
+
+## Final Touches
+
+```{r}
+#| output-location: column
+p <- p +
+  theme(
+    plot.background =
+      element_rect(fill = "white", color = "white"),
+    panel.grid.major.y =
+      element_line(color = wmf_colors$Base70),
+    panel.grid.minor.y =
+      element_line(color = wmf_colors$Base80),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14)
+  ) +
+  ggtitle("Content Interactions")
+
+p
+```
+
+## Adding Arrows
+
+```{r}
+#| output-location: column
+p <- p +
+  geom_segment(
+    aes(
+      x = prev_month,
+      xend = month,
+      y = from, yend = to,
+      color = direction
+    ),
+    size = 1.0, # default 0.5
+    arrow = arrow(
+      type = "closed",
+      length = unit(0.1, "inches")
+    ),
+    data = annotations
+  )
+
+p
+```
+
+## Adjusting Arrows
+
+```{r}
+#| output-location: column
+p <- p +
+  scale_color_manual(
+    values = c(
+      "up" = wmf_colors$Green50,
+      "down" = wmf_colors$Red50
+    ),
+    guide = "none"
+  )
+
+p
+```
